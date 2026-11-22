@@ -1,3 +1,4 @@
+cat > setup.sh << 'EOF'
 #!/bin/bash
 set -e
 
@@ -568,3 +569,4 @@ echo "  DNS     : $IP_ADDR"
 echo "  Test    : ping $DOMAIN"
 
 exit 0
+EOF
