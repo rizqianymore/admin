@@ -42,7 +42,6 @@ is_ip() { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
 
 IP_ARG=""; PREFIX_ARG=""; GW_ARG=""; DOMAIN_ARG=""; SSH_ARG=""; INDEX_ARG=""
 AUTO=0
-AUTO_FILL=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -52,8 +51,7 @@ while [[ $# -gt 0 ]]; do
         --domain) DOMAIN_ARG="$2"; shift 2 ;;
         --ssh)    SSH_ARG="$2"; shift 2 ;;
         --index)  INDEX_ARG="$2"; shift 2 ;;
-        -y|--yes) AUTO=1; shift ;;
-        --auto)   AUTO=1; AUTO_FILL=1; shift ;;
+        -y|--yes|--auto) AUTO=1; shift ;;
         -h|--help)
             echo "Pakai: $0 [opsi]"
             echo ""
@@ -278,22 +276,90 @@ ok "sshd_config ditulis"
 ok "FASE 4: install paket"
 
 export DEBIAN_FRONTEND=noninteractive
-install_pkgs() {
-    apt-get update -y 2>&1 | tail -2
-    apt-get install -y bind9 bind9-utils dnsutils apache2 net-tools 2>&1 | tail -3
-}
 
-if ! install_pkgs; then
-    warn "gagal, coba fix"
-    apt-get -f install -y 2>/dev/null || true
-    dpkg --configure -a 2>/dev/null || true
-    install_pkgs || die "install gagal total"
-fi
-ok "paket OK"
+PKGS_NEED="bind9 bind9-utils dnsutils apache2 net-tools curl"
+PKGS_MISSING=""
 
-for b in named-checkconf named-checkzone apache2ctl dig; do
-    command -v "$b" >/dev/null && ok "$b ada" || bad "$b tidak ada"
+for p in $PKGS_NEED; do
+    if dpkg -s "$p" >/dev/null 2>&1; then
+        ok "paket $p sudah ada"
+    else
+        warn "paket $p belum ada"
+        PKGS_MISSING="$PKGS_MISSING $p"
+    fi
 done
+
+if [[ -z "$PKGS_MISSING" ]]; then
+    ok "semua paket sudah terinstall"
+else
+    ok "install:$PKGS_MISSING"
+
+    apt_fix_lock() {
+        if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+           fuser /var/lib/dpkg/lock >/dev/null 2>&1 || \
+           fuser /var/cache/apt/archives/lock >/dev/null 2>&1; then
+            warn "apt lock aktif, tunggu 15s"
+            sleep 15
+            if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+                warn "lock masih aktif, kill"
+                fuser -k /var/lib/dpkg/lock-frontend 2>/dev/null || true
+                sleep 3
+            fi
+        fi
+    }
+
+    apt_fix_dpkg() {
+        if dpkg --audit 2>/dev/null | grep -q .; then
+            warn "dpkg rusak, fix"
+            dpkg --configure -a >/dev/null 2>&1 || true
+            apt-get -f install -y >/dev/null 2>&1 || true
+        fi
+    }
+
+    apt_update() {
+        apt-get update -y 2>&1 | tail -3
+    }
+
+    apt_install() {
+        apt-get install -y $PKGS_MISSING 2>&1 | tail -5
+    }
+
+    apt_fix_lock
+    apt_fix_dpkg
+
+    if ! apt_update; then
+        warn "apt update gagal, coba ganti mirror"
+        if [[ -f /etc/apt/sources.list ]]; then
+            cp /etc/apt/sources.list /etc/apt/sources.list.bak.$(date +%s) 2>/dev/null || true
+            sed -i 's|deb.debian.org|kartolo.sby.datautama.net.id|g' /etc/apt/sources.list 2>/dev/null || true
+            sed -i 's|security.debian.org|kartolo.sby.datautama.net.id|g' /etc/apt/sources.list 2>/dev/null || true
+            apt_update || warn "apt update tetap gagal"
+        fi
+    fi
+
+    if ! apt_install; then
+        warn "install gagal, coba fix bertingkat"
+        apt_fix_lock
+        apt_fix_dpkg
+        apt-get -f install -y >/dev/null 2>&1 || true
+        dpkg --configure -a >/dev/null 2>&1 || true
+        if ! apt_install; then
+            warn "install masih gagal, coba satu per satu"
+            for p in $PKGS_MISSING; do
+                apt-get install -y "$p" >/dev/null 2>&1 && ok "$p OK" || bad "$p gagal"
+            done
+        fi
+    fi
+
+    ok "install selesai"
+fi
+
+for b in named-checkconf named-checkzone apache2ctl dig curl; do
+    command -v "$b" >/dev/null 2>&1 && ok "$b ada" || bad "$b tidak ada"
+done
+
+systemctl list-unit-files | grep -q '^bind9\.service' && ok "service bind9 terdaftar" || bad "service bind9 tidak terdaftar"
+systemctl list-unit-files | grep -q '^apache2\.service' && ok "service apache2 terdaftar" || bad "service apache2 tidak terdaftar"
 
 ok "FASE 5: BIND9"
 
