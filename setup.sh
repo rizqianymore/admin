@@ -40,7 +40,10 @@ int_to_ip() {
 }
 is_ip() { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
 
-IP_ARG=""; PREFIX_ARG=""; GW_ARG=""; DOMAIN_ARG=""; SSH_ARG=""; INDEX_ARG=""; AUTO=0
+IP_ARG=""; PREFIX_ARG=""; GW_ARG=""; DOMAIN_ARG=""; SSH_ARG=""; INDEX_ARG=""
+AUTO=0
+AUTO_FILL=0
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --ip)     IP_ARG="$2"; shift 2 ;;
@@ -50,10 +53,29 @@ while [[ $# -gt 0 ]]; do
         --ssh)    SSH_ARG="$2"; shift 2 ;;
         --index)  INDEX_ARG="$2"; shift 2 ;;
         -y|--yes) AUTO=1; shift ;;
+        --auto)   AUTO=1; AUTO_FILL=1; shift ;;
         -h|--help)
-            echo "Pakai: $0 [--ip IP] [--prefix N] [--gw IP] [--domain NAMA] [--ssh PORT] [--index PATH] [-y]"
+            echo "Pakai: $0 [opsi]"
+            echo ""
+            echo "Opsi:"
+            echo "  --ip IP        IP static Debian"
+            echo "  --prefix N     Prefix CIDR (24 = 255.255.255.0)"
+            echo "  --gw IP        Gateway"
+            echo "  --domain NAMA  Domain (WAJIB di mode non-interaktif)"
+            echo "  --ssh PORT     Port SSH (default 22)"
+            echo "  --index PATH   File index.html (default HTML bawaan)"
+            echo ""
+            echo "Mode:"
+            echo "  (tanpa flag)   Interaktif, tanya semua"
+            echo "  -y, --yes      Non-interaktif, argumen wajib lengkap"
+            echo "  --auto         Non-interaktif, isi otomatis kalau kosong"
+            echo ""
+            echo "Contoh:"
+            echo "  $0"
+            echo "  $0 --auto --domain namaweb"
+            echo "  $0 --auto --ip 192.168.56.25 --prefix 24 --gw 192.168.56.1 --domain namaweb --ssh 142 --index /root/index.html"
             exit 0 ;;
-        *) die "Argumen tidak dikenal: $1" ;;
+        *) die "Argumen tidak dikenal: $1 (pakai -h)" ;;
     esac
 done
 
@@ -113,6 +135,7 @@ if [[ -n "$IP_ARG" ]]; then
     IP_ADDR="$IP_ARG"; is_ip "$IP_ADDR" || die "IP invalid: $IP_ADDR"
 elif [[ "$AUTO" -eq 1 ]]; then
     IP_ADDR="$DEF_IP"
+    ok "IP auto: $IP_ADDR"
 else
     while :; do
         IP_ADDR=$(ask "IP Debian [${DEF_IP}]: " "$DEF_IP")
@@ -125,6 +148,7 @@ if [[ -n "$PREFIX_ARG" ]]; then
     PREFIX="$PREFIX_ARG"
 elif [[ "$AUTO" -eq 1 ]]; then
     PREFIX="$DEF_PREFIX"
+    ok "prefix auto: /$PREFIX"
 else
     while :; do
         PREFIX=$(ask "Prefix CIDR (24=255.255.255.0) [${DEF_PREFIX}]: " "$DEF_PREFIX")
@@ -138,6 +162,7 @@ if [[ -n "$GW_ARG" ]]; then
     GATEWAY="$GW_ARG"; is_ip "$GATEWAY" || die "Gateway invalid: $GATEWAY"
 elif [[ "$AUTO" -eq 1 ]]; then
     GATEWAY="$DEF_GW"
+    [[ -n "$GATEWAY" ]] && ok "gateway auto: $GATEWAY" || warn "gateway kosong (tanpa default route)"
 else
     while :; do
         GATEWAY=$(ask "Gateway [${DEF_GW:-kosong}]: " "$DEF_GW")
@@ -160,8 +185,8 @@ IFS=. read -r O1 O2 O3 O4 <<< "$IP_ADDR"
 
 case "$PREFIX" in
     24) REV_ZONE="${O3}.${O2}.${O1}.in-addr.arpa"; PTR="$O4" ;;
-    16) REV_ZONE="${O2}.${O1}.in-addr.arpa";       PTR="$O3.$O4" ;;
-    8)  REV_ZONE="${O1}.in-addr.arpa";             PTR="$O2.$O3.$O4" ;;
+    16) REV_ZONE="${O2}.${O1}.in-addr.arpa";       PTR="$O4.$O3" ;;
+    8)  REV_ZONE="${O1}.in-addr.arpa";             PTR="$O4.$O3.$O2" ;;
     *)  warn "prefix /$PREFIX, reverse pakai /24"
         REV_ZONE="${O3}.${O2}.${O1}.in-addr.arpa"; PTR="$O4" ;;
 esac
@@ -170,7 +195,7 @@ if [[ -n "$DOMAIN_ARG" ]]; then
     DOMAIN="$DOMAIN_ARG"
     [[ "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] || die "Domain invalid"
 elif [[ "$AUTO" -eq 1 ]]; then
-    die "Mode -y butuh --domain"
+    die "Mode non-interaktif butuh --domain (domain tidak bisa ditebak)"
 else
     while :; do
         DOMAIN=$(ask "Domain (mis. namaweb): " "")
@@ -184,6 +209,7 @@ if [[ -n "$SSH_ARG" ]]; then
     SSH_PORT="$SSH_ARG"
 elif [[ "$AUTO" -eq 1 ]]; then
     SSH_PORT=22
+    ok "SSH port auto: 22"
 else
     SSH_PORT=$(ask "Port SSH [22]: " "22")
 fi
@@ -194,6 +220,7 @@ if [[ -n "$INDEX_ARG" ]]; then
     [[ -f "$INDEX_SRC" ]] || die "File index tidak ada: $INDEX_SRC"
 elif [[ "$AUTO" -eq 1 ]]; then
     INDEX_SRC=""
+    warn "index auto: pakai HTML bawaan"
 else
     warn "file index.html dari VS Code (kosong = HTML default)"
     while :; do
@@ -371,10 +398,15 @@ restart_svc() {
 systemctl daemon-reload
 
 if systemctl list-unit-files | grep -q '^networking\.service'; then
-    if ifup --no-act "$IFACE" >/dev/null 2>&1; then
-        restart_svc networking || bad "networking gagal"
+    if command -v ifup >/dev/null 2>&1; then
+        if ifup --no-act "$IFACE" >/dev/null 2>&1; then
+            restart_svc networking || bad "networking gagal"
+        else
+            bad "config interfaces invalid, networking tidak direstart"
+        fi
     else
-        bad "config interfaces invalid, networking tidak direstart"
+        warn "ifup tidak ada, restart networking langsung"
+        restart_svc networking || bad "networking gagal"
     fi
 elif systemctl is-active NetworkManager >/dev/null 2>&1; then
     restart_svc NetworkManager || bad "NetworkManager gagal"
@@ -443,7 +475,7 @@ echo "SSH port  : $SSH_PORT"
 echo "Web       : http://$IP_ADDR"
 echo
 echo "Cek manual:"
-echo "  ip a | grep $IP_ADDR"
+echo "  ip a show $IFACE | grep $IP_ADDR"
 echo "  nslookup $DOMAIN"
 echo "  nslookup $IP_ADDR"
 echo "  curl http://$IP_ADDR"
