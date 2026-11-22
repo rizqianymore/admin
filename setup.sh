@@ -62,6 +62,7 @@ done
 
 ok "FASE 0: cek awal & pembersihan"
 
+# FIX: Lepas lock resolv.conf agar tidak error saat ganti IP
 chattr -i /etc/resolv.conf 2>/dev/null || true
 systemctl stop systemd-resolved 2>/dev/null || true
 systemctl disable systemd-resolved 2>/dev/null || true
@@ -72,8 +73,7 @@ if [[ -f /etc/bind/named.conf.local ]]; then
     cp /etc/bind/named.conf.local /etc/bind/named.conf.local.bak.$(date +%s) 2>/dev/null || true
 fi
 
-ok "Config lama di-backup, zone lama dipertahankan"
-
+# Set resolv.conf sementara untuk apt (P2P gak butuh internet, tapi jaga-jaga)
 echo -e "nameserver 8.8.8.8\nnameserver 1.1.1.1" > /etc/resolv.conf
 
 if [[ -f /etc/os-release ]]; then
@@ -160,7 +160,8 @@ elif [[ "$AUTO" -eq 1 ]]; then
     [[ -n "$GATEWAY" ]] && ok "gateway auto: $GATEWAY" || warn "gateway kosong"
 else
     while :; do
-        GATEWAY=$(ask "Gateway [${DEF_GW:-kosong}]: " "$DEF_GW")
+        # FIX P2P: User wajib masukin IP Windows/Laptop sebagai Gateway
+        GATEWAY=$(ask "Gateway (IP Windows/Laptop Client) [${DEF_GW:-kosong}]: " "$DEF_GW")
         [[ -z "$GATEWAY" ]] && { warn "gateway kosong"; break; }
         is_ip "$GATEWAY" && break
         fail "Gateway invalid"
@@ -239,14 +240,6 @@ echo "  Index     : ${INDEX_SRC:-default}"
 if [[ "$AUTO" -eq 0 ]]; then
     K=$(ask "Lanjut? (y/N): " "n")
     [[ "$K" =~ ^[yY]$ ]] || die "dibatalkan"
-fi
-
-if [[ "$IP_ADDR" != "$DEF_IP" ]] && ping -c1 -W1 "$IP_ADDR" >/dev/null 2>&1; then
-    warn "IP $IP_ADDR merespons ping — mungkin sudah dipakai host lain!"
-    if [[ "$AUTO" -eq 0 ]]; then
-        K=$(ask "Lanjut tetap? (y/N): " "n")
-        [[ "$K" =~ ^[yY]$ ]] || die "dibatalkan (IP konflik)"
-    fi
 fi
 
 ok "FASE 3: tulis config network + ssh"
@@ -395,6 +388,7 @@ named-checkzone "$REV_ZONE" "$REV_FILE" >/dev/null 2>&1 && ok "rev zone valid" |
 
 ok "FASE 6: resolv.conf + web"
 
+# FIX: Lepas chattr sebelum tulis ulang
 chattr -i /etc/resolv.conf 2>/dev/null || true
 backup /etc/resolv.conf
 cat > /etc/resolv.conf <<EOL
