@@ -67,14 +67,12 @@ systemctl stop systemd-resolved 2>/dev/null || true
 systemctl disable systemd-resolved 2>/dev/null || true
 
 systemctl stop bind9 2>/dev/null || true
-[[ -f /etc/bind/named.conf.local ]] && rm -f /etc/bind/named.conf.local
 
-for f in /etc/bind/db.*; do
-    if [[ -f "$f" && "$f" != "/etc/bind/db.0" && "$f" != "/etc/bind/db.127" && "$f" != "/etc/bind/db.255" && "$f" != "/etc/bind/db.empty" && "$f" != "/etc/bind/db.local" && "$f" != "/etc/bind/db.root" ]]; then
-        rm -f "$f"
-    fi
-done
-ok "Config lama dibersihkan"
+if [[ -f /etc/bind/named.conf.local ]]; then
+    cp /etc/bind/named.conf.local /etc/bind/named.conf.local.bak.$(date +%s) 2>/dev/null || true
+fi
+
+ok "Config lama di-backup, zone lama dipertahankan"
 
 echo -e "nameserver 8.8.8.8\nnameserver 1.1.1.1" > /etc/resolv.conf
 
@@ -243,6 +241,10 @@ if [[ "$AUTO" -eq 0 ]]; then
     [[ "$K" =~ ^[yY]$ ]] || die "dibatalkan"
 fi
 
+if [[ "$IP_ADDR" != "$DEF_IP" ]] && ping -c1 -W1 "$IP_ADDR" >/dev/null 2>&1; then
+    die "IP $IP_ADDR sudah dipakai host lain"
+fi
+
 ok "FASE 3: tulis config network + ssh"
 
 backup() { [[ -f "$1" ]] && cp "$1" "$1.bak.$(date +%s)" 2>/dev/null || true; }
@@ -264,16 +266,15 @@ ok "interfaces ditulis"
 
 SSHD=/etc/ssh/sshd_config
 backup "$SSHD"
-sed -i -E "s/^#?Port .*/Port $SSH_PORT/" "$SSHD"
-sed -i -E "s/^#?PermitRootLogin .*/PermitRootLogin yes/" "$SSHD"
-grep -q "^Port " "$SSHD" || echo "Port $SSH_PORT" >> "$SSHD"
-grep -q "^PermitRootLogin " "$SSHD" || echo "PermitRootLogin yes" >> "$SSHD"
+sed -i -E '/^#?Port /d; /^#?PermitRootLogin /d' "$SSHD"
+echo "Port $SSH_PORT" >> "$SSHD"
+echo "PermitRootLogin yes" >> "$SSHD"
 ok "sshd_config ditulis"
 
 ok "FASE 4: install paket"
 
 export DEBIAN_FRONTEND=noninteractive
-PKGS_NEED="bind9 bind9-utils bind9-dnsutils dnsutils apache2 apache2-bin apache2-utils net-tools curl ifupdown isc-dhcp-client iproute2"
+PKGS_NEED="bind9 bind9-utils bind9-dnsutils apache2 net-tools curl ifupdown isc-dhcp-client iproute2"
 PKGS_MISSING=""
 
 for p in $PKGS_NEED; do
@@ -295,9 +296,13 @@ else
         fuser -k /var/lib/dpkg/lock-frontend 2>/dev/null || true
     fi
     apt-get update -y >/dev/null 2>&1 || warn "apt update gagal"
-    apt-get install -y $PKGS_MISSING >/dev/null 2>&1 || {
-        for p in $PKGS_MISSING; do apt-get install -y "$p" >/dev/null 2>&1 || bad "$p gagal"; done
-    }
+    if ! apt-get install -y $PKGS_MISSING >/dev/null 2>&1; then
+        warn "install batch gagal, coba fix dependency"
+        apt-get install -f -y >/dev/null 2>&1 || true
+        for p in $PKGS_MISSING; do
+            apt-get install -y "$p" >/dev/null 2>&1 || bad "$p gagal"
+        done
+    fi
 fi
 
 for b in named-checkconf named-checkzone dig curl; do
@@ -310,17 +315,31 @@ FWD_FILE="/etc/bind/db.$DOMAIN"
 REV_FILE="/etc/bind/db.$IP_ADDR"
 
 backup /etc/bind/named.conf.local
-cat > /etc/bind/named.conf.local <<EOL
+touch /etc/bind/named.conf.local
+
+if grep -q "zone \"$DOMAIN\"" /etc/bind/named.conf.local 2>/dev/null; then
+    warn "zone $DOMAIN sudah ada, skip append"
+else
+    cat >> /etc/bind/named.conf.local <<EOL
 zone "$DOMAIN" {
     type master;
     file "$FWD_FILE";
 };
 
+EOL
+fi
+
+if grep -q "zone \"$REV_ZONE\"" /etc/bind/named.conf.local 2>/dev/null; then
+    warn "zone $REV_ZONE sudah ada, skip append"
+else
+    cat >> /etc/bind/named.conf.local <<EOL
 zone "$REV_ZONE" {
     type master;
     file "$REV_FILE";
 };
+
 EOL
+fi
 
 cat > "$FWD_FILE" <<EOL
 \$TTL    604800
@@ -373,12 +392,12 @@ named-checkzone "$REV_ZONE" "$REV_FILE" >/dev/null 2>&1 && ok "rev zone valid" |
 ok "FASE 6: resolv.conf + web"
 
 backup /etc/resolv.conf
+chattr -i /etc/resolv.conf 2>/dev/null || true
 cat > /etc/resolv.conf <<EOL
 search $DOMAIN
 nameserver $IP_ADDR
 EOL
-chattr +i /etc/resolv.conf 2>/dev/null || true
-ok "resolv.conf ditulis dan dikunci"
+ok "resolv.conf ditulis"
 
 rm -f /var/www/html/index.html
 if [[ -n "$INDEX_SRC" && -f "$INDEX_SRC" ]]; then
@@ -446,14 +465,11 @@ ok "FASE 8: diagnostic"
 
 sleep 2
 
-ss -lunp 2>/dev/null | grep -q "$IP_ADDR:53" && ok "bind9 listen $IP_ADDR:53" || bad "bind9 tidak listen $IP_ADDR:53"
-ss -ltnp 2>/dev/null | grep -q ':80 .*apache2' && ok "apache2 :80" || bad "apache2 tidak :80"
+dig +short "$DOMAIN" @"$IP_ADDR" 2>/dev/null | grep -q "$IP_ADDR" && ok "bind9 resolve $DOMAIN" || bad "bind9 tidak resolve $DOMAIN"
 
-FWD_TEST=$(dig +short "$DOMAIN" @"$IP_ADDR" 2>/dev/null | head -1)
-[[ "$FWD_TEST" == "$IP_ADDR" ]] && ok "forward $DOMAIN -> $IP_ADDR" || bad "forward gagal"
-
-REV_TEST=$(dig +short -x "$IP_ADDR" @"$IP_ADDR" 2>/dev/null | sed 's/\.$//' | head -1)
-[[ "$REV_TEST" == "$DOMAIN" ]] && ok "reverse $IP_ADDR -> $DOMAIN" || bad "reverse gagal"
+REV_QUERY=$(echo "$IP_ADDR" | awk -F. '{print $4"."$3"."$2"."$1".in-addr.arpa"}')
+REV_TEST=$(dig +short PTR "$REV_QUERY" @"$IP_ADDR" 2>/dev/null | sed 's/\.$//' | head -1)
+[[ "$REV_TEST" == "$DOMAIN" ]] && ok "reverse $IP_ADDR -> $DOMAIN" || bad "reverse gagal (dapat: ${REV_TEST:-kosong})"
 
 if command -v curl >/dev/null; then
     CODE=$(curl --noproxy '*' -s -o /dev/null -w "%{http_code}" "http://$IP_ADDR")
