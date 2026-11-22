@@ -7,7 +7,7 @@ warn() { echo -e "${Y}[*]${N} $*"; }
 fail() { echo -e "${R}[-]${N} $*"; }
 die()  { fail "$*"; exit 1; }
 
-trap 'echo -e "${R}[-]${N} Script berhenti di baris $LINENO (exit $?)" >&2' ERR
+trap 'echo -e "${R}[-]${N} Error di baris $LINENO (exit $?)" >&2' ERR
 
 [[ $EUID -eq 0 ]] || die "Harus root"
 
@@ -60,37 +60,22 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-ok "FASE 0: Deep Cleaner & Auto-Fix System"
+ok "FASE 0: cek awal & pembersihan"
 
-# 1. Buka kunci resolv.conf (jika terkunci)
 chattr -i /etc/resolv.conf 2>/dev/null || true
-
-# 2. Matikan service yang suka bentrok
 systemctl stop systemd-resolved 2>/dev/null || true
 systemctl disable systemd-resolved 2>/dev/null || true
 
-# 3. Bersihkan BIND9 total
-if systemctl is-active --quiet bind9; then
-    warn "Menghentikan BIND9 sementara untuk pembersihan..."
-    systemctl stop bind9 2>/dev/null || true
-fi
+systemctl stop bind9 2>/dev/null || true
+[[ -f /etc/bind/named.conf.local ]] && rm -f /etc/bind/named.conf.local
 
-if [[ -f /etc/bind/named.conf.local ]]; then
-    cp /etc/bind/named.conf.local /etc/bind/named.conf.local.bak.$(date +%s) 2>/dev/null || true
-    cat > /etc/bind/named.conf.local <<EOL
-// Config lama dibersihkan otomatis oleh setup.sh
-EOL
-fi
-
-# Hapus SEMUA file db.* buatan script sebelumnya (kecuali file bawaan Debian)
 for f in /etc/bind/db.*; do
     if [[ -f "$f" && "$f" != "/etc/bind/db.0" && "$f" != "/etc/bind/db.127" && "$f" != "/etc/bind/db.255" && "$f" != "/etc/bind/db.empty" && "$f" != "/etc/bind/db.local" && "$f" != "/etc/bind/db.root" ]]; then
         rm -f "$f"
     fi
 done
-ok "Semua config DNS lama dibersihkan total"
+ok "Config lama dibersihkan"
 
-# 4. Reset Resolv.conf ke Google agar internet tetap jalan sebelum diubah
 echo -e "nameserver 8.8.8.8\nnameserver 1.1.1.1" > /etc/resolv.conf
 
 if [[ -f /etc/os-release ]]; then
@@ -117,7 +102,7 @@ for s in bind9 apache2; do
     systemctl is-failed "$s" >/dev/null 2>&1 && systemctl reset-failed "$s" 2>/dev/null || true
 done
 
-ok "FASE 1: Deteksi Network"
+ok "FASE 1: deteksi network"
 
 IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
 [[ -z "$IFACE" ]] && IFACE=$(ip -4 addr show | awk '/^[0-9]+:/{i=$2} /inet /{print i; exit}' | tr -d ':')
@@ -141,7 +126,7 @@ DEF_GW=$(ip -4 route show default 2>/dev/null | awk '/via/{print $3; exit}')
 
 ok "terdeteksi: $DEF_IP/$DEF_PREFIX, gw ${DEF_GW:-kosong}"
 
-ok "FASE 2: Input Data"
+ok "FASE 2: input data"
 
 if [[ -n "$IP_ARG" ]]; then
     IP_ADDR="$IP_ARG"; is_ip "$IP_ADDR" || die "IP invalid: $IP_ADDR"
@@ -210,7 +195,7 @@ elif [[ "$AUTO" -eq 1 ]]; then
     die "Mode non-interaktif butuh --domain"
 else
     while :; do
-        DOMAIN=$(ask "Domain (mis. namaweb.com): " "")
+        DOMAIN=$(ask "Domain (mis. namaweb): " "")
         [[ -z "$DOMAIN" ]] && { fail "wajib"; continue; }
         [[ "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] && break
         fail "format invalid"
@@ -258,7 +243,7 @@ if [[ "$AUTO" -eq 0 ]]; then
     [[ "$K" =~ ^[yY]$ ]] || die "dibatalkan"
 fi
 
-ok "FASE 3: Tulis Config Network & SSH"
+ok "FASE 3: tulis config network + ssh"
 
 backup() { [[ -f "$1" ]] && cp "$1" "$1.bak.$(date +%s)" 2>/dev/null || true; }
 
@@ -285,7 +270,7 @@ grep -q "^Port " "$SSHD" || echo "Port $SSH_PORT" >> "$SSHD"
 grep -q "^PermitRootLogin " "$SSHD" || echo "PermitRootLogin yes" >> "$SSHD"
 ok "sshd_config ditulis"
 
-ok "FASE 4: Install Paket"
+ok "FASE 4: install paket"
 
 export DEBIAN_FRONTEND=noninteractive
 PKGS_NEED="bind9 bind9-utils bind9-dnsutils dnsutils apache2 apache2-bin apache2-utils net-tools curl ifupdown isc-dhcp-client iproute2"
@@ -385,31 +370,30 @@ named-checkconf 2>/dev/null && ok "named-checkconf OK" || bad "named-checkconf g
 named-checkzone "$DOMAIN" "$FWD_FILE" >/dev/null 2>&1 && ok "fwd zone valid" || bad "fwd zone invalid"
 named-checkzone "$REV_ZONE" "$REV_FILE" >/dev/null 2>&1 && ok "rev zone valid" || bad "rev zone invalid"
 
-ok "FASE 6: Resolv.conf & Web"
+ok "FASE 6: resolv.conf + web"
 
 backup /etc/resolv.conf
 cat > /etc/resolv.conf <<EOL
 search $DOMAIN
 nameserver $IP_ADDR
 EOL
-# Kunci permanen agar tidak ditimpa router
 chattr +i /etc/resolv.conf 2>/dev/null || true
-ok "resolv.conf ditulis dan DIKUNCI PERMANEN"
+ok "resolv.conf ditulis dan dikunci"
 
 rm -f /var/www/html/index.html
 if [[ -n "$INDEX_SRC" && -f "$INDEX_SRC" ]]; then
     cp "$INDEX_SRC" /var/www/html/index.html
-    ok "index.html kustom dipasang"
+    ok "index.html dari $INDEX_SRC"
 else
     cat > /var/www/html/index.html <<EOL
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>$DOMAIN</title></head>
 <body><h1>$DOMAIN</h1><p>$IP_ADDR</p></body></html>
 EOL
-    ok "index.html default dipasang"
+    ok "index.html default"
 fi
 
-ok "FASE 7: Restart Service"
+ok "FASE 7: restart service"
 
 restart_svc() {
     local s=$1
@@ -426,24 +410,44 @@ if systemctl list-unit-files | grep -q '^networking\.service'; then
     if [[ "$CUR_IP" == "$IP_ADDR" ]]; then
         ok "IP $IFACE sudah $IP_ADDR, skip restart networking"
     else
-        if command -v ifup >/dev/null 2>&1 && ifup --no-act "$IFACE" >/dev/null 2>&1; then
-            restart_svc networking || bad "networking gagal"
+        if command -v ifup >/dev/null 2>&1; then
+            if ifup --no-act "$IFACE" >/dev/null 2>&1; then
+                restart_svc networking || bad "networking gagal"
+            else
+                bad "config interfaces invalid, networking tidak direstart"
+            fi
         else
-            warn "Config interfaces invalid, tidak restart networking"
+            warn "ifup tidak ada, restart networking langsung"
+            restart_svc networking || bad "networking gagal"
         fi
     fi
+elif systemctl is-active NetworkManager >/dev/null 2>&1; then
+    restart_svc NetworkManager || bad "NetworkManager gagal"
 fi
 
 restart_svc ssh || bad "ssh gagal"
-restart_svc bind9 || bad "bind9 gagal"
-restart_svc apache2 || bad "apache2 gagal"
 
-ok "FASE 8: Diagnostic"
+if ! restart_svc bind9; then
+    if ss -lunp 2>/dev/null | grep -q ':53 ' && ! ss -lunp 2>/dev/null | grep -q named; then
+        warn "port 53 dipakai proses lain, stop systemd-resolved"
+        systemctl stop systemd-resolved 2>/dev/null || true
+        systemctl disable systemd-resolved 2>/dev/null || true
+        restart_svc bind9 || bad "bind9 tetap gagal"
+    else
+        bad "bind9 gagal"
+    fi
+fi
+
+if ! restart_svc apache2; then
+    ss -ltnp 2>/dev/null | grep -q ':80 ' && ! ss -ltnp 2>/dev/null | grep -q apache2 && bad "port 80 dipakai proses lain" || bad "apache2 gagal"
+fi
+
+ok "FASE 8: diagnostic"
 
 sleep 2
 
-ss -lunp 2>/dev/null | grep -q "$IP_ADDR:53" && ok "bind9 listen $IP_ADDR:53" || bad "bind9 tidak listen"
-ss -ltnp 2>/dev/null | grep -q ':80 .*apache2' && ok "apache2 :80" || bad "apache2 tidak listen"
+ss -lunp 2>/dev/null | grep -q "$IP_ADDR:53" && ok "bind9 listen $IP_ADDR:53" || bad "bind9 tidak listen $IP_ADDR:53"
+ss -ltnp 2>/dev/null | grep -q ':80 .*apache2' && ok "apache2 :80" || bad "apache2 tidak :80"
 
 FWD_TEST=$(dig +short "$DOMAIN" @"$IP_ADDR" 2>/dev/null | head -1)
 [[ "$FWD_TEST" == "$IP_ADDR" ]] && ok "forward $DOMAIN -> $IP_ADDR" || bad "forward gagal"
@@ -451,8 +455,10 @@ FWD_TEST=$(dig +short "$DOMAIN" @"$IP_ADDR" 2>/dev/null | head -1)
 REV_TEST=$(dig +short -x "$IP_ADDR" @"$IP_ADDR" 2>/dev/null | sed 's/\.$//' | head -1)
 [[ "$REV_TEST" == "$DOMAIN" ]] && ok "reverse $IP_ADDR -> $DOMAIN" || bad "reverse gagal"
 
-CODE=$(curl --noproxy '*' -s -o /dev/null -w "%{http_code}" "http://$IP_ADDR")
-[[ "$CODE" == "200" ]] && ok "HTTP 200" || bad "HTTP $CODE"
+if command -v curl >/dev/null; then
+    CODE=$(curl --noproxy '*' -s -o /dev/null -w "%{http_code}" "http://$IP_ADDR")
+    [[ "$CODE" == "200" ]] && ok "HTTP 200" || bad "HTTP $CODE"
+fi
 
 ss -ltn 2>/dev/null | grep -q ":$SSH_PORT " && ok "SSH :$SSH_PORT" || bad "SSH tidak :$SSH_PORT"
 
@@ -471,6 +477,12 @@ echo "Gateway   : ${GATEWAY:-kosong}"
 echo "Reverse   : $REV_ZONE"
 echo "SSH port  : $SSH_PORT"
 echo "Web       : http://$IP_ADDR"
+echo
+echo "Cek manual:"
+echo "  ip a show $IFACE | grep $IP_ADDR"
+echo "  nslookup $DOMAIN"
+echo "  nslookup $IP_ADDR"
+echo "  curl http://$IP_ADDR"
 echo
 echo "Client:"
 echo "  IP      : ${NETWORK%.*}.xxx"
