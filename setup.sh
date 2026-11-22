@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -eE
 
 G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; N='\033[0m'
 ok()   { echo -e "${G}[+]${N} $*"; }
@@ -242,7 +242,11 @@ if [[ "$AUTO" -eq 0 ]]; then
 fi
 
 if [[ "$IP_ADDR" != "$DEF_IP" ]] && ping -c1 -W1 "$IP_ADDR" >/dev/null 2>&1; then
-    die "IP $IP_ADDR sudah dipakai host lain"
+    warn "IP $IP_ADDR merespons ping — mungkin sudah dipakai host lain!"
+    if [[ "$AUTO" -eq 0 ]]; then
+        K=$(ask "Lanjut tetap? (y/N): " "n")
+        [[ "$K" =~ ^[yY]$ ]] || die "dibatalkan (IP konflik)"
+    fi
 fi
 
 ok "FASE 3: tulis config network + ssh"
@@ -391,8 +395,8 @@ named-checkzone "$REV_ZONE" "$REV_FILE" >/dev/null 2>&1 && ok "rev zone valid" |
 
 ok "FASE 6: resolv.conf + web"
 
-backup /etc/resolv.conf
 chattr -i /etc/resolv.conf 2>/dev/null || true
+backup /etc/resolv.conf
 cat > /etc/resolv.conf <<EOL
 search $DOMAIN
 nameserver $IP_ADDR
@@ -418,7 +422,7 @@ restart_svc() {
     local s=$1
     systemctl restart "$s" 2>/dev/null && systemctl is-active "$s" >/dev/null 2>&1 && { ok "$s aktif"; return 0; }
     warn "$s gagal"
-    journalctl -u "$s" -n 10 --no-pager 2>/dev/null | tail -8
+    journalctl -u "$s" -n 10 --no-pager 2>/dev/null | tail -8 || true
     return 1
 }
 
@@ -469,10 +473,19 @@ dig +short "$DOMAIN" @"$IP_ADDR" 2>/dev/null | grep -q "$IP_ADDR" && ok "bind9 r
 
 REV_QUERY=$(echo "$IP_ADDR" | awk -F. '{print $4"."$3"."$2"."$1".in-addr.arpa"}')
 REV_TEST=$(dig +short PTR "$REV_QUERY" @"$IP_ADDR" 2>/dev/null | sed 's/\.$//' | head -1)
-[[ "$REV_TEST" == "$DOMAIN" ]] && ok "reverse $IP_ADDR -> $DOMAIN" || bad "reverse gagal (dapat: ${REV_TEST:-kosong})"
+if [[ "$REV_TEST" == "$DOMAIN" ]]; then
+    ok "reverse $IP_ADDR -> $DOMAIN"
+else
+    REV_TEST2=$(dig +short -x "$IP_ADDR" @"$IP_ADDR" 2>/dev/null | sed 's/\.$//' | head -1)
+    if [[ "$REV_TEST2" == "$DOMAIN" ]]; then
+        ok "reverse $IP_ADDR -> $DOMAIN (via -x)"
+    else
+        bad "reverse gagal (query: $REV_QUERY, hasil: '${REV_TEST:-kosong}')"
+    fi
+fi
 
 if command -v curl >/dev/null; then
-    CODE=$(curl --noproxy '*' -s -o /dev/null -w "%{http_code}" "http://$IP_ADDR")
+    CODE=$(curl --noproxy '*' -s -o /dev/null -w "%{http_code}" "http://$IP_ADDR" 2>/dev/null || echo "000")
     [[ "$CODE" == "200" ]] && ok "HTTP 200" || bad "HTTP $CODE"
 fi
 
