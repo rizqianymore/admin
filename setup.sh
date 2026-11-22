@@ -54,13 +54,57 @@ while [[ $# -gt 0 ]]; do
         -y|--yes|--auto) AUTO=1; shift ;;
         -h|--help)
             echo "Pakai: $0 [opsi]"
-            echo "Opsi: --ip, --prefix, --gw, --domain, --ssh, --index, --auto"
+            echo ""
+            echo "Opsi:"
+            echo "  --ip IP        IP static Debian"
+            echo "  --prefix N     Prefix CIDR (24 = 255.255.255.0)"
+            echo "  --gw IP        Gateway"
+            echo "  --domain NAMA  Domain (WAJIB di mode non-interaktif)"
+            echo "  --ssh PORT     Port SSH (default 22)"
+            echo "  --index PATH   File index.html (default HTML bawaan)"
+            echo ""
+            echo "Mode:"
+            echo "  (tanpa flag)   Interaktif, tanya semua"
+            echo "  -y, --yes      Non-interaktif, argumen wajib lengkap"
+            echo "  --auto         Non-interaktif, isi otomatis kalau kosong"
+            echo ""
+            echo "Contoh:"
+            echo "  $0"
+            echo "  $0 --auto --domain namaweb"
+            echo "  $0 --auto --ip 192.168.56.25 --prefix 24 --gw 192.168.56.1 --domain namaweb --ssh 142 --index /root/index.html"
             exit 0 ;;
-        *) die "Argumen tidak dikenal: $1" ;;
+        *) die "Argumen tidak dikenal: $1 (pakai -h)" ;;
     esac
 done
 
-ok "FASE 0: cek awal"
+ok "FASE 0: cek awal & pembersihan config lama"
+
+# Buka kunci resolv.conf jika sebelumnya pernah dikunci
+chattr -i /etc/resolv.conf 2>/dev/null || true
+
+# Bersihkan BIND9 lama
+if systemctl is-active --quiet bind9; then
+    warn "BIND9 berjalan, menghentikan sementara untuk reset..."
+    systemctl stop bind9 2>/dev/null || true
+fi
+
+if [[ -f /etc/bind/named.conf.local ]]; then
+    if grep -q "zone " /etc/bind/named.conf.local 2>/dev/null; then
+        warn "Menghapus zone lama di named.conf.local"
+        cp /etc/bind/named.conf.local /etc/bind/named.conf.local.bak.$(date +%s) 2>/dev/null || true
+        cat > /etc/bind/named.conf.local <<EOL
+// Config lama dibersihkan otomatis oleh setup.sh
+EOL
+    fi
+fi
+
+# Hapus file db lama yang dibuat script sebelumnya
+for f in /etc/bind/db.*; do
+    if [[ -f "$f" && "$f" != "/etc/bind/db.0" && "$f" != "/etc/bind/db.127" && "$f" != "/etc/bind/db.255" && "$f" != "/etc/bind/db.empty" && "$f" != "/etc/bind/db.local" && "$f" != "/etc/bind/db.root" ]]; then
+        rm -f "$f"
+    fi
+done
+ok "Config DNS lama dibersihkan"
 
 if [[ -f /etc/os-release ]]; then
     . /etc/os-release
@@ -176,7 +220,7 @@ if [[ -n "$DOMAIN_ARG" ]]; then
     DOMAIN="$DOMAIN_ARG"
     [[ "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] || die "Domain invalid"
 elif [[ "$AUTO" -eq 1 ]]; then
-    die "Mode non-interaktif butuh --domain"
+    die "Mode non-interaktif butuh --domain (domain tidak bisa ditebak)"
 else
     while :; do
         DOMAIN=$(ask "Domain (mis. namaweb): " "")
@@ -359,7 +403,7 @@ FWD_FILE="/etc/bind/db.$DOMAIN"
 REV_FILE="/etc/bind/db.$IP_ADDR"
 
 backup /etc/bind/named.conf.local
-cat > /etc/bind/named.conf.local <<EOF
+cat > /etc/bind/named.conf.local <<EOL
 zone "$DOMAIN" {
     type master;
     file "$FWD_FILE";
@@ -369,9 +413,9 @@ zone "$REV_ZONE" {
     type master;
     file "$REV_FILE";
 };
-EOF
+EOL
 
-cat > "$FWD_FILE" <<EOF
+cat > "$FWD_FILE" <<EOL
 \$TTL    604800
 @       IN      SOA     $DOMAIN. root.$DOMAIN. (
                               2
@@ -383,9 +427,9 @@ cat > "$FWD_FILE" <<EOF
 @       IN      NS      $DOMAIN.
 @       IN      A       $IP_ADDR
 www     IN      A       $IP_ADDR
-EOF
+EOL
 
-cat > "$REV_FILE" <<EOF
+cat > "$REV_FILE" <<EOL
 \$TTL    604800
 @       IN      SOA     $DOMAIN. root.$DOMAIN. (
                               1
@@ -397,10 +441,10 @@ cat > "$REV_FILE" <<EOF
 @       IN      NS      $DOMAIN.
 @       IN      A       $IP_ADDR
 $PTR      IN      PTR     $DOMAIN.
-EOF
+EOL
 
 backup /etc/bind/named.conf.options
-cat > /etc/bind/named.conf.options <<EOF
+cat > /etc/bind/named.conf.options <<EOL
 options {
     directory "/var/cache/bind";
     recursion yes;
@@ -412,7 +456,7 @@ options {
     dnssec-validation no;
     auth-nxdomain no;
 };
-EOF
+EOL
 ok "zone + options ditulis"
 
 named-checkconf 2>/dev/null && ok "named-checkconf OK" || bad "named-checkconf gagal"
@@ -422,11 +466,12 @@ named-checkzone "$REV_ZONE" "$REV_FILE" >/dev/null 2>&1 && ok "rev zone valid" |
 ok "FASE 6: resolv.conf + web"
 
 backup /etc/resolv.conf
-cat > /etc/resolv.conf <<EOF
+cat > /etc/resolv.conf <<EOL
 search $DOMAIN
 nameserver $IP_ADDR
-EOF
-ok "resolv.conf ditulis"
+EOL
+chattr +i /etc/resolv.conf 2>/dev/null || true
+ok "resolv.conf ditulis dan dikunci (tidak bisa ditimpa)"
 
 systemctl is-active systemd-resolved >/dev/null 2>&1 && warn "systemd-resolved aktif"
 
@@ -435,11 +480,11 @@ if [[ -n "$INDEX_SRC" && -f "$INDEX_SRC" ]]; then
     cp "$INDEX_SRC" /var/www/html/index.html
     ok "index.html dari $INDEX_SRC"
 else
-    cat > /var/www/html/index.html <<EOF
+    cat > /var/www/html/index.html <<EOL
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>$DOMAIN</title></head>
 <body><h1>$DOMAIN</h1><p>$IP_ADDR</p></body></html>
-EOF
+EOL
     ok "index.html default"
 fi
 
