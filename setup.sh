@@ -277,7 +277,7 @@ ok "FASE 4: install paket"
 
 export DEBIAN_FRONTEND=noninteractive
 
-PKGS_NEED="bind9 bind9-utils dnsutils apache2 net-tools curl"
+PKGS_NEED="bind9 bind9-utils bind9-dnsutils dnsutils apache2 apache2-bin apache2-utils net-tools curl ifupdown isc-dhcp-client iproute2"
 PKGS_MISSING=""
 
 for p in $PKGS_NEED; do
@@ -354,9 +354,18 @@ else
     ok "install selesai"
 fi
 
-for b in named-checkconf named-checkzone apache2ctl dig curl; do
+for b in named-checkconf named-checkzone dig curl; do
     command -v "$b" >/dev/null 2>&1 && ok "$b ada" || bad "$b tidak ada"
 done
+
+if command -v apache2ctl >/dev/null 2>&1 || [[ -x /usr/sbin/apache2ctl ]]; then
+    ok "apache2ctl ada"
+else
+    warn "apache2ctl tidak ada (apache2 tetap jalan, bukan fatal)"
+fi
+
+command -v ifup >/dev/null 2>&1 && ok "ifup ada" || warn "ifup tidak ada"
+command -v ifdown >/dev/null 2>&1 && ok "ifdown ada" || warn "ifdown tidak ada"
 
 systemctl list-unit-files | grep -q '^bind9\.service' && ok "service bind9 terdaftar" || bad "service bind9 tidak terdaftar"
 systemctl list-unit-files | grep -q '^apache2\.service' && ok "service apache2 terdaftar" || bad "service apache2 tidak terdaftar"
@@ -464,15 +473,20 @@ restart_svc() {
 systemctl daemon-reload
 
 if systemctl list-unit-files | grep -q '^networking\.service'; then
-    if command -v ifup >/dev/null 2>&1; then
-        if ifup --no-act "$IFACE" >/dev/null 2>&1; then
-            restart_svc networking || bad "networking gagal"
-        else
-            bad "config interfaces invalid, networking tidak direstart"
-        fi
+    CUR_IP=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
+    if [[ "$CUR_IP" == "$IP_ADDR" ]]; then
+        ok "IP $IFACE sudah $IP_ADDR, skip restart networking"
     else
-        warn "ifup tidak ada, restart networking langsung"
-        restart_svc networking || bad "networking gagal"
+        if command -v ifup >/dev/null 2>&1; then
+            if ifup --no-act "$IFACE" >/dev/null 2>&1; then
+                restart_svc networking || bad "networking gagal"
+            else
+                bad "config interfaces invalid, networking tidak direstart"
+            fi
+        else
+            warn "ifup tidak ada, restart networking langsung"
+            restart_svc networking || bad "networking gagal"
+        fi
     fi
 elif systemctl is-active NetworkManager >/dev/null 2>&1; then
     restart_svc NetworkManager || bad "NetworkManager gagal"
