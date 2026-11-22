@@ -54,26 +54,9 @@ while [[ $# -gt 0 ]]; do
         -y|--yes|--auto) AUTO=1; shift ;;
         -h|--help)
             echo "Pakai: $0 [opsi]"
-            echo ""
-            echo "Opsi:"
-            echo "  --ip IP        IP static Debian"
-            echo "  --prefix N     Prefix CIDR (24 = 255.255.255.0)"
-            echo "  --gw IP        Gateway"
-            echo "  --domain NAMA  Domain (WAJIB di mode non-interaktif)"
-            echo "  --ssh PORT     Port SSH (default 22)"
-            echo "  --index PATH   File index.html (default HTML bawaan)"
-            echo ""
-            echo "Mode:"
-            echo "  (tanpa flag)   Interaktif, tanya semua"
-            echo "  -y, --yes      Non-interaktif, argumen wajib lengkap"
-            echo "  --auto         Non-interaktif, isi otomatis kalau kosong"
-            echo ""
-            echo "Contoh:"
-            echo "  $0"
-            echo "  $0 --auto --domain namaweb"
-            echo "  $0 --auto --ip 192.168.56.25 --prefix 24 --gw 192.168.56.1 --domain namaweb --ssh 142 --index /root/index.html"
+            echo "Opsi: --ip, --prefix, --gw, --domain, --ssh, --index, --auto"
             exit 0 ;;
-        *) die "Argumen tidak dikenal: $1 (pakai -h)" ;;
+        *) die "Argumen tidak dikenal: $1" ;;
     esac
 done
 
@@ -193,7 +176,7 @@ if [[ -n "$DOMAIN_ARG" ]]; then
     DOMAIN="$DOMAIN_ARG"
     [[ "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] || die "Domain invalid"
 elif [[ "$AUTO" -eq 1 ]]; then
-    die "Mode non-interaktif butuh --domain (domain tidak bisa ditebak)"
+    die "Mode non-interaktif butuh --domain"
 else
     while :; do
         DOMAIN=$(ask "Domain (mis. namaweb): " "")
