@@ -7,8 +7,8 @@
 $ErrorActionPreference = 'Stop'
 
 # ===================== KONFIGURASI =====================
-$RepoZip = 'https://github.com/USERNAME/REPO/archive/refs/heads/main.zip'
-$RepoRaw = 'https://raw.githubusercontent.com/USERNAME/REPO/main'
+$RepoZip = 'https://github.com/rizqianymore/admin/archive/refs/heads/main.zip'
+$RepoRaw = 'https://raw.githubusercontent.com/rizqianymore/admin/main'
 $Xampp = 'C:\xampp'
 $WebRoot = 'C:\xampp\htdocs'
 $AppName = 'hafizul'
